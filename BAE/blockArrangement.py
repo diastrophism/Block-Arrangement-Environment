@@ -18,78 +18,48 @@ class _BlockArrangement(BaseEnv):
         name,
         arrival_scale,
         stock_scale,
-        width=6, 
-        height=5, 
-        num_blocks=50,
+        width, 
+        height, 
+        num_blocks,
         **kwargs,
     ):
-        space, blocks = self.generate_space_block(width, height, num_blocks, arrival_scale, stock_scale)
+        self.width = width
+        self.height = height
         self.NUM_BLOCKS = num_blocks
-        self.BLOCKS = sorted(blocks, key=operator.attrgetter('_startdate'))
-        self.height = space.height
-        self.width = space.width
         self.arrival_scale = arrival_scale
         self.stock_scale = stock_scale
-        self.space_name = space.name
         self.state_size = self.width * self.height
         self.action_size = (self.width-1) * self.height
         self.action_type = "discrete"
         self.LOGS = []
-        self.cumulate = np.zeros([self.width, self.height])
         self.name = str(name)
         self._initialize()
-
-        self.x_loc = [0,0,0,0,0,
-                      1,1,1,1,1,
-                      2,2,2,2,2,
-                      3,3,3,3,3,
-                      4,4,4,4,4,
-                      5]
-
-        self.y_loc = [0,1,2,3,4,
-                      0,1,2,3,4,
-                      0,1,2,3,4,
-                      0,1,2,3,4,
-                      0,1,2,3,4,
-                      0]
 
     def _initialize(self):
         space, blocks = self.generate_space_block(self.width, self.height, self.NUM_BLOCKS, self.arrival_scale, self.stock_scale)
         self.BLOCKS = sorted(blocks, key=operator.attrgetter('_startdate'))
-        self.space_name = space.name
-        self.SPACE = sp.Space(self.width, self.height, self.space_name)
+        self.SPACE = space
         self.SPACE.update_blocks(copy.deepcopy(self.BLOCKS))
         self.STAGE = 0
-        #print(f"episode Start!")
-        #print(f"state size: {self.state_size}")
-        #print(f"action size: {self.action_size}")
 
     def reset(self):
         self._initialize()
-        status = self.SPACE.get_status(0)
-        status = status.flatten()
-        status = np.expand_dims(status, 0)
-        # print("--------------reset--------------")
-        # print()
-        # print()
-        return status
+        status = self.SPACE.get_status(0).flatten()
+        return np.expand_dims(status, 0)
 
     def step(self, action):
         reward = 0
         done = False
         blocks = self.SPACE.get_blocks()
         target = blocks[self.STAGE]
-
         x_loc = int(action / self.height)
         y_loc = int(action % self.height)
-        
         is_arrangible = self.SPACE.arrangement(self.STAGE, x_loc, y_loc, target.isin)
-        # print(f"is_arrangible: {is_arrangible}")
 
         self.STAGE += 1
         # print(f"STAGE: {self.STAGE}")
         # print(f"action : {action}")
-        s = self.get_state()
+        # s = self.get_state()
         # print("적치 후")
         # for i in range(6):
         #     print(s[i])
@@ -98,35 +68,25 @@ class _BlockArrangement(BaseEnv):
             reward = -10
             done = True
         elif self.STAGE == len(blocks):
-            reward = +10
+            if self.STAGE == self.NUM_BLOCKS:
+                reward = +10
             done = True
             self.substep()
-            #print("----------episode finish------------")
         else:
-            #reward = +1
             self.substep()
 
         status = self.get_state().flatten()
         next_state, reward, done = map(
             lambda x: np.expand_dims(x, 0), [status, [reward], [done]]
         )
-        
-        # idx = 0
-        # for i in self.SPACE.get_blocks():
-        #     if i.isin == True:
-        #         print(f"idx: {idx}, {i.name}, {i.get_schedule()}, {i.term}, {i.get_location()}")
-        #     else:
-        #         print(f"idx: {idx}, {i.name}, {i.get_schedule()}, {i.term}")
-        #     idx = idx + 1
 
         return (next_state, reward, done)
 
     def substep(self):
         current = self.SPACE.event_in[self.STAGE - 1]
         next = datetime.datetime(datetime.MAXYEAR, 1, 1)
-        
         if len(self.SPACE.event_in) != self.STAGE:
-            next = self.SPACE.event_in[self.STAGE] #다음 적치 날짜
+            next = self.SPACE.event_in[self.STAGE]
 
         #현재 적치와 다음 적치 사이에 발생하는 Move_OUT 블록 추출
         transfers = []
@@ -134,10 +94,9 @@ class _BlockArrangement(BaseEnv):
         for i in range(self.STAGE):
             if current < out_events[i][0] <= next:
                 transfers.append(out_events[i])
+                #print(f"반출 작업 발생!! {out_events[i][1].get_location()}")
         if len(transfers) == 0:
-            return +1
-        
-        #print("반출 작업 발생!!")
+            return
         
         current_blocks = []
         blocks = self.SPACE.get_blocks()
@@ -146,6 +105,16 @@ class _BlockArrangement(BaseEnv):
             if start <= current < end:
                 current_blocks.append(block)
         
+        # for transfer in transfers:
+        #     x_loc, y_loc = transfer[1].get_location()
+        #     print(f"정렬 전: {x_loc, y_loc}")
+
+        transfers = self.move_out_order_optimization(transfers)
+
+        # for transfer in transfers:
+        #     x_loc, y_loc = transfer[1].get_location()
+        #     print(f"정렬 후: {x_loc, y_loc}")
+
         cnt = 0
         for transfer in transfers:
             state = self.SPACE.get_status(max(0, self.STAGE - 1))
@@ -178,17 +147,41 @@ class _BlockArrangement(BaseEnv):
                 #self.NUM_BLOCKS = len(new_blocks)
                 break
 
-        # s = self.get_state()
-        # print("반출 후")
-        # for i in range(6):
-        #     print(s[i])
-        
         self.SPACE.update_blocks(copy.deepcopy(self.BLOCKS))
         return -cnt
 
 
     def close(self):
         pass
+
+    def move_out_order_optimization(self, transfers):
+        new_transfers = []
+        q = deque()
+        q.append([self.width-1, 0])
+        dx = [-1,+1,0,0]
+        dy = [0,0,-1,+1]
+        visit = np.full((self.width, self.height), 0, dtype = int)
+        for i in range(0, self.height):
+            visit[self.width-1][i] = 1
+        while q:
+            cur_x, cur_y = q.popleft()
+
+            for i in range(4):
+                next_x = cur_x + dx[i]
+                next_y = cur_y + dy[i]
+                if next_x < 0 or next_x >= self.width or next_y < 0 or next_y >= self.height:
+                    continue
+                if visit[next_x][next_y] == 0:
+                    visit[next_x][next_y] = 1
+                    q.append([next_x, next_y])
+                    for transfer in transfers:
+                        x, y = transfer[1].get_location()
+                        if x == next_x and y == next_y:
+                            new_transfers.append(transfer)
+
+
+
+        return new_transfers
 
     def find_shortest_path(self, state, stack, visit, shortest_len, breaking):
         cur, path = stack.pop()
@@ -205,7 +198,7 @@ class _BlockArrangement(BaseEnv):
             ny = cy + dy[i]
             if nx < 0 or nx >=self.width or ny < 0 or ny >= self.height:
                 continue
-            if (nx == 5 and ny == 1) or (nx == 5 and ny == 2) or (nx == 5 and ny == 3) or (nx == 5 and ny == 4):
+            if nx == self.height and ny != 0: # 마지막행인데 EXIT이 아닐시
                 continue 
             if breaking <= shortest_len and (visit[nx][ny] > breaking or visit[nx][ny] == -1):
                 path.append(nx * self.height + ny)
@@ -331,45 +324,35 @@ class _BlockArrangement(BaseEnv):
 
         return blocking_blocks
 
-    def reachableToExit(self, state, xloc, yloc):
+    def reachableToExit(self, state, x, y):
         q = deque()
-        q.append([xloc, yloc])
-
+        q.append([x, y])
         dx = [-1,+1,0,0]
         dy = [0,0,-1,+1]
-        visit = np.full((6,5), 0, dtype = int)
-        visit[xloc,yloc] = 1
-        visit[5][1] = 10
-        visit[5][2] = 10
-        visit[5][3] = 10
-        visit[5][4] = 10
+        visit = np.full((self.width, self.height), 0, dtype = int)
+        visit[x,y] = 1
+        for i in range(1, 5): # EXIT이 존재하는 row는 적치장으로 사용하지 않음
+            visit[self.height][i] = 1
         is_reachable = False
-
         while q:
             cur_x, cur_y = q.popleft()
-                        
-            if cur_x == 5 and cur_y == 0:
+            if cur_x == self.height and cur_y == 0:
                 is_reachable = True
                 break
-
             for i in range(4):
                 next_x = cur_x + dx[i]
                 next_y = cur_y + dy[i]
-
-                if next_x < 0 or next_x >= 6 or next_y < 0 or next_y >= 5:
+                if next_x < 0 or next_x >= self.width or next_y < 0 or next_y >= self.height:
                     continue
-
-                if state[next_x][next_y] == -1 and visit[next_x][next_y] == 0:
+                if state[next_x][next_y] == -1  and visit[next_x][next_y] == 0:
                     visit[next_x][next_y] = 1
                     q.append([next_x, next_y])
-
         return is_reachable
-
     
-        
     def generate_space_block(self, width, height, num_block, arrival_scale, stock_scale):
-        space = sp.Space(width, height, 'test_area')
+        space = sp.Space(width, height)
         new_schedule = self.generate_schedule(num_block, arrival_scale, stock_scale)
+        #print(new_schedule)
         blocks = []
         for index, row in new_schedule.iterrows():
             date_in = row['Move_IN']
@@ -380,15 +363,14 @@ class _BlockArrangement(BaseEnv):
 
     def generate_schedule(self, num_block, arrival_scale, stock_scale):
         new_schedule = pd.DataFrame(columns=['BlockID','Move_IN','Move_OUT','duration','JIBUN'])
-
-        # rvs = random vairable samplit
+        # rvs = random vairable sampling
         # scale = standard deviation
         arrivals = stats.expon.rvs(scale=arrival_scale, size=num_block) 
         stocks = stats.expon.rvs(scale=stock_scale, size=num_block)
         current_time = datetime.datetime.strptime('2022-05-01 09:00:00', '%Y-%m-%d %H:%M:%S')
-        j = 0
+        idx = 0
         for i in range(num_block):
-            next_time = current_time + datetime.timedelta(hours=arrivals[i]) # 평균적으로 대략 4.5 시간 
+            next_time = current_time + datetime.timedelta(hours=arrivals[i])
             end_time = next_time + datetime.timedelta(days=stocks[i])
             duration = datetime.timedelta(days=end_time.day - next_time.day) + datetime.timedelta(days=(end_time.month - next_time.month)*30)
             current_time = next_time
@@ -398,11 +380,10 @@ class _BlockArrangement(BaseEnv):
             
             next_time = datetime.datetime(next_time.year, next_time.month, next_time.day, next_time.hour)
             end_time = datetime.datetime(end_time.year, end_time.month, end_time.day)
-            j += 1
-            row = pd.Series(['block' + str(j), next_time, end_time, duration.days, ''],
+            idx += 1
+            row = pd.Series([idx, next_time, end_time, duration.days, ''],
                     index=['BlockID', 'Move_IN', 'Move_OUT', 'duration', 'JIBUN'])
             new_schedule = new_schedule.append(row, ignore_index=True)
-
         return new_schedule
 
     def get_state(self):
@@ -410,101 +391,6 @@ class _BlockArrangement(BaseEnv):
         #state = self.normalize_state(state, self.STAGE)
         return state
 
-    def normalize_state(self, state, stage):
-        norm_state = np.array(state)
-        blocks = self.SPACE.get_blocks()
-        if len(blocks) == stage:
-           stage += -1
-        duration = blocks[stage].term
-        for i in range(norm_state.shape[0]):
-            for j in range(norm_state.shape[1]):
-                if norm_state[i, j] != -1.0:
-                    norm_state[i, j] = norm_state[i, j] / duration
-                if norm_state[i, j] >= 3:
-                    norm_state[i, j] = 3.0
-        return norm_state
-
-    def set_transporter(self, transporter):
-        self.Transporter = transporter
-
-    def get_reward(self, state, target):
-        blocks = []
-        for i in range(state.shape[0]):
-            for j in range(state.shape[1]):
-                if state[i, j] != -1.0:
-                    blocks.append(np.array([j, i]))
-        moves, _ = self.Transporter.get_block_moves(blocks, target)
-        reward = max(0, 3 - moves)
-        return reward
-
-    def transport_block(self, state, target, current_blocks):
-        blocks = []
-        terms = []
-        index_curr = []
-        index = -1
-        index_target = -1
-        for i in range(state.shape[0]):
-            for j in range(state.shape[1]):
-                if state[i, j] != -1.0:
-                    index += 1
-                    blocks.append(np.array([i, j]))
-                    terms.append(state[i, j])
-                    if i == target[0] and j == target[1]:
-                        index_target = index
-                    for k in range(len(current_blocks)):
-                        x, y = current_blocks[k].get_location()
-                        if x == i and y == j:
-                            index_curr.append(k)
-        if index_target == -1:
-            print('here')
-        moves, moved_blocks = self.Transporter.get_block_moves(blocks, index_target, self.name)
-        moved_state = np.full(state.shape, -1.0, dtype=float)
-        try:
-            for i in range(len(moved_blocks)):
-                if i == index_target:
-                    continue
-                current_blocks[index_curr[i]].set_location(moved_blocks[i][0], moved_blocks[i][1])
-                moved_state[moved_blocks[i][0], moved_blocks[i][1]] = terms[i] - terms[index_target]
-
-            self.SPACE.modify_latest_state(moved_state)
-            self.LOGS.append(self.SPACE.RESULTS[-1])
-            del current_blocks[index_curr[index_target]]
-        except:
-            print('here')
-        if moves == 0:
-            reward = 2
-        else:
-            reward = max(0, 1/moves)
-        print(moves)
-        return reward
-
 class block_arrangement(_BlockArrangement):
     def __init__(self, **kwargs):
         super(block_arrangement, self).__init__(f"block_arrangement", **kwargs)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
