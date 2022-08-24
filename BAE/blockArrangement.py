@@ -100,21 +100,12 @@ class _BlockArrangement(BaseEnv):
         
         current_blocks = []
         blocks = self.SPACE.get_blocks()
+        
         for block in blocks:
             start, end = block.get_schedule()
             if start <= current < end:
                 current_blocks.append(block)
-        
-        # for transfer in transfers:
-        #     x_loc, y_loc = transfer[1].get_location()
-        #     print(f"정렬 전: {x_loc, y_loc}")
-
         transfers = self.move_out_order_optimization(transfers)
-
-        # for transfer in transfers:
-        #     x_loc, y_loc = transfer[1].get_location()
-        #     print(f"정렬 후: {x_loc, y_loc}")
-
         cnt = 0
         for transfer in transfers:
             state = self.SPACE.get_status(max(0, self.STAGE - 1))
@@ -127,11 +118,19 @@ class _BlockArrangement(BaseEnv):
                 state[x_loc][y_loc] = -1.0
                 self.BLOCKS = blocks
             else:
-                #print("비작업 블록 발생!!")
+                print("비작업 블록 발생!!")
                 #간섭블록의 위치를 가져옴
                 blocking_position = self.find_blocking_block(state, x_loc, y_loc)
                 #print(f"blocking_postion: {blocking_position}")
                 #간섭블록의 위치로 간섭블록 탐색
+                for block in self.BLOCKS:
+                    id = block.name
+                    isin = block.isin
+                    start, end = block.get_schedule()
+                    print(id, isin, start, end)
+
+                print()
+
                 new_blocks = copy.deepcopy(blocks)
                 for block in blocks:
                     #print(block.name)
@@ -144,9 +143,16 @@ class _BlockArrangement(BaseEnv):
                                 new_blocks.insert(self.STAGE, block)
                                 #print(f"blockID: {block.name}")
                 self.BLOCKS = new_blocks
-                #self.NUM_BLOCKS = len(new_blocks)
-                break
+                print("재배치 추가후 스케쥴")
+                for block in self.BLOCKS:
+                    id = block.name
+                    isin = block.isin
+                    start, end = block.get_schedule()
+                    print(id, isin, start, end)
 
+                print()#self.NUM_BLOCKS = len(new_blocks)
+                break
+        
         self.SPACE.update_blocks(copy.deepcopy(self.BLOCKS))
         return -cnt
 
@@ -179,16 +185,14 @@ class _BlockArrangement(BaseEnv):
                         if x == next_x and y == next_y:
                             new_transfers.append(transfer)
 
-
-
         return new_transfers
 
     def find_shortest_path(self, state, stack, visit, shortest_len, breaking):
         cur, path = stack.pop()
-        #print(f"cur: {cur}")
-        #print(f"path: {path}")
-        if cur == 25:
+
+        if cur == ((self.width-1)*self.height):
             return path
+
         cx = int(cur / self.height)
         cy = int(cur % self.height)
         dx = [1,-1,0,0]
@@ -198,7 +202,7 @@ class _BlockArrangement(BaseEnv):
             ny = cy + dy[i]
             if nx < 0 or nx >=self.width or ny < 0 or ny >= self.height:
                 continue
-            if nx == self.height and ny != 0: # 마지막행인데 EXIT이 아닐시
+            if nx == self.height and ny != 0:
                 continue 
             if breaking <= shortest_len and (visit[nx][ny] > breaking or visit[nx][ny] == -1):
                 path.append(nx * self.height + ny)
@@ -211,117 +215,69 @@ class _BlockArrangement(BaseEnv):
                 if finish != -1:
                     return finish
                 path.pop()
-                #visit[i[0]] = False
                 
         return -1
 
     def find_blocking_block(self, state, xloc, yloc):
-        INF = int(1e9)
-        distance = [INF] * 27
-        visited = [False] * 27
-        graph = [[] for i in range(27)]
-        
-        for i in range(4):
-            for j in range(4):
-                a = int(i * self.height) + j
-                b = int(i * self.height) + j + 1
-                if state[i][j] != -1:
-                    graph[b].append((a, 1))
-                else:
-                    graph[b].append((a, 0))
-                
-                if state[i][j+1] != -1:
-                    graph[a].append((b, 1))
-                else:
-                    graph[a].append((b, 0))
-                
-                c = (i+1)*5 + j
-                if state[i][j] != -1:
-                    graph[c].append((a, 1))
-                else:
-                    graph[c].append((a, 0))
-                
-                if state[i+1][j] != -1:
-                    graph[a].append((c, 1))
-                else:
-                    graph[a].append((c, 0))
-        
-        for i in range(4):
-            a = 20 + i
-            b = 20 + i + 1
-            if state[4][i+1] != -1:
-                graph[a].append((b, 1))
-            else:
-                graph[a].append((b, 0))
-            
-            if state[4][i] != -1:
-                graph[b].append((a, 1))
-            else:
-                graph[b].append((a, 0))
-        
-            a = 4 + i*5
-            b = 4 + (i+1)*5
-            if state[i+1][4] != -1:
-                graph[a].append((b, 1))
-            else:
-                graph[a].append((b, 0))
-            
-            if state[i][4] != -1:
-                graph[b].append((a, 1))
-            else:
-                graph[b].append((a, 0))
-                
-        graph[20].append((25,0))
-        graph[25].append((20,0))
-        
-        start = xloc * 5 + yloc
-        distance[start] = 0
-        visited[start] = True
-        
-        for i in graph[start]:
-            distance[i[0]] = i[1]
-            
-        for i in range(26):
-            smallest = INF
-            index = 0
-            for j in range(26):
-                if distance[j] < smallest and not visited[j]:
-                    smallest = distance[j]
-                    index = j
-            
-            visited[index] = True
-            for j in graph[index]:
-                cost = distance[index] + j[1]
-                if cost < distance[j[0]]:
-                    distance[j[0]] = cost
-        
-        shortest_len = distance[25]
-        #print(shortest_len)
-        visit = np.full((6,5), -1, dtype = int)
+        graph = [[] for i in range(self.width * self.height)]
+        dx = [1, -1, 0, 0]
+        dy = [0, 0, 1, -1]
+        for x in range(self.width):
+            for y in range(self.height):
+                node = x * self.height + y
+                for d in range(4):
+                    nx = x + dx[d]
+                    ny = y + dy[d]
+                    if nx<0 or nx>=self.width or ny<0 or ny>=self.height:
+                        continue
+                    if nx == self.width and ny != 0:
+                        continue
+                    adj_node = nx * self.height + ny
+                    if state[x][y] == -1:
+                        graph[adj_node].append((node, 0))
+                    else:
+                        graph[adj_node].append((node, 1))
+
+        target_node = xloc * self.height + yloc
+        distance = [int(1e9)] * (self.width * self.height)
+        distance[target_node] = 0
+        visited = [False] * (self.width * self.height)
+        visited[target_node] = True
+
+        for i in graph[target_node]: distance[i[0]] = i[1]
+        for _ in range(self.width * self.height - (self.height - 1)):
+            idx = 0
+            min_dist = int(1e9)
+            for j in range(self.width * self.height - (self.height - 1)):
+                if distance[j] < min_dist and not visited[j]:
+                    min_dist = distance[j]
+                    idx = j
+
+            visited[idx] = True
+            for adj_node in graph[idx]:
+                cost = min_dist + adj_node[1]
+                if cost < distance[adj_node[0]]:
+                    distance[adj_node[0]] = cost
+
+        shortest_len = distance[(self.width-1) * self.height]
+        print(f"shortest_len = {shortest_len}")
+
+        visit = np.full((self.width,self.height), -1, dtype = int)
         st = []
-        st.append((start, []))
-        x = int(start/self.height)
-        y = int(start%self.height)
-        visit[x][y] = 0
-        visit[5][1] = 10
-        visit[5][2] = 10
-        visit[5][3] = 10
-        visit[5][4] = 10
+        st.append((target_node, []))
+        visit[xloc][yloc] = 0
+        for i in range(1, self.height): 
+            visit[self.height][i] = 10
         shortest_path = self.find_shortest_path(state, st, visit, shortest_len, 0)
         
         blocking_blocks = []
-        #print(shortest_path)
-        
         for i in shortest_path:
             x = int(i/self.height)
             y = int(i%self.height)
             if state[x][y] != -1:
                 blocking_blocks.append(i)
 
-        # for i in range(len(shortest_path) - 1):
-        #     if distance[shortest_path[i]] != distance[shortest_path[i+1]]:
-        #         blocking_blocks.append(shortest_path[i+1])
-
+        print(f"blocking_blocks = {blocking_blocks}")
         return blocking_blocks
 
     def reachableToExit(self, state, x, y):
@@ -331,7 +287,7 @@ class _BlockArrangement(BaseEnv):
         dy = [0,0,-1,+1]
         visit = np.full((self.width, self.height), 0, dtype = int)
         visit[x,y] = 1
-        for i in range(1, 5): # EXIT이 존재하는 row는 적치장으로 사용하지 않음
+        for i in range(1, 5):
             visit[self.height][i] = 1
         is_reachable = False
         while q:
@@ -352,7 +308,6 @@ class _BlockArrangement(BaseEnv):
     def generate_space_block(self, width, height, num_block, arrival_scale, stock_scale):
         space = sp.Space(width, height)
         new_schedule = self.generate_schedule(num_block, arrival_scale, stock_scale)
-        #print(new_schedule)
         blocks = []
         for index, row in new_schedule.iterrows():
             date_in = row['Move_IN']
