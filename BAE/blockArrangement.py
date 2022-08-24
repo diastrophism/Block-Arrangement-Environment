@@ -18,6 +18,7 @@ class _BlockArrangement(BaseEnv):
         name,
         arrival_scale,
         stock_scale,
+        utilization,
         width, 
         height, 
         num_blocks,
@@ -26,7 +27,7 @@ class _BlockArrangement(BaseEnv):
         self.width = width
         self.height = height
         self.NUM_BLOCKS = num_blocks
-        self.arrival_scale = arrival_scale
+        self.arrival_scale = self.find_block_arrival_term(stock_scale, utilization)
         self.stock_scale = stock_scale
         self.state_size = self.width * self.height
         self.action_size = (self.width-1) * self.height
@@ -159,6 +160,10 @@ class _BlockArrangement(BaseEnv):
 
     def close(self):
         pass
+
+    def find_block_arrival_term(self, stock_scale, utilization):
+        arrival_scale = stock_scale*24 / utilization * 100 / ((self.width-1) * self.height) 
+        return arrival_scale
 
     def move_out_order_optimization(self, transfers):
         new_transfers = []
