@@ -6,6 +6,7 @@ import operator
 import datetime
 import copy
 import pandas as pd
+import random
 import scipy.stats as stats
 from queue import Queue
 from collections import deque
@@ -16,28 +17,42 @@ class _BlockArrangement(BaseEnv):
     def __init__(
         self,
         name,
-        arrival_scale,
         stock_scale,
         utilization,
         width, 
         height, 
+        block_size,
         num_blocks,
+        provided_ratio,
+        entrance_cnt,
+        entrance_position,
+        rearrangement_occur_reward,
+        arrangement_fail_reward,
+        schedule_clear_reward_without_rearrangement,
         **kwargs,
     ):
         self.width = width
         self.height = height
+        self.block_size = block_size
         self.NUM_BLOCKS = num_blocks
         self.arrival_scale = self.find_block_arrival_term(stock_scale, utilization)
         self.stock_scale = stock_scale
-        self.state_size = self.width * self.height
+        self.state_size = self.width * self.height + 2
         self.action_size = (self.width-1) * self.height
         self.action_type = "discrete"
+        self.provided_ratio = provided_ratio
+        self.entrance_cnt = entrance_cnt
+        self.entrance_position = entrance_position
+        self.rearrangement_occur_reward = rearrangement_occur_reward
+        self.arrangement_fail_reward = arrangement_fail_reward
+        self.schedule_clear_reward_without_rearrangement = schedule_clear_reward_without_rearrangement
         self.LOGS = []
         self.name = str(name)
+        self.idx = 0
         self._initialize()
 
     def _initialize(self):
-        space, blocks = self.generate_space_block(self.width, self.height, self.NUM_BLOCKS, self.arrival_scale, self.stock_scale)
+        space, blocks = self.generate_space_block(self.width, self.height, self.NUM_BLOCKS, self.arrival_scale, self.stock_scale, self.provided_ratio)
         self.BLOCKS = sorted(blocks, key=operator.attrgetter('_startdate'))
         self.SPACE = space
         self.SPACE.update_blocks(copy.deepcopy(self.BLOCKS))
@@ -46,6 +61,7 @@ class _BlockArrangement(BaseEnv):
     def reset(self):
         self._initialize()
         status = self.SPACE.get_status(0).flatten()
+        status = np.append(status, np.array([0,0]))
         return np.expand_dims(status, 0)
 
     def step(self, action):
@@ -58,25 +74,30 @@ class _BlockArrangement(BaseEnv):
         is_arrangible = self.SPACE.arrangement(self.STAGE, x_loc, y_loc, target.isin)
 
         self.STAGE += 1
-        # print(f"STAGE: {self.STAGE}")
-        # print(f"action : {action}")
-        # s = self.get_state()
-        # print("적치 후")
-        # for i in range(6):
-        #     print(s[i])
-
         if not is_arrangible:
-            reward = -10
+            reward = self.arrangement_fail_reward
             done = True
         elif self.STAGE == len(blocks):
-            if self.STAGE == self.NUM_BLOCKS:
-                reward = +10
-            done = True
-            self.substep()
+            reward = self.substep()
+            if reward == 0:
+                done = True
+                if self.STAGE == self.NUM_BLOCKS:
+                    reward = self.schedule_clear_reward_without_rearrangement
         else:
-            self.substep()
+            reward = self.substep()
+
 
         status = self.get_state().flatten()
+        if not done:
+            new_blocks = self.SPACE.get_blocks()
+            next_block = new_blocks[self.STAGE]
+            if next_block.isin == True:
+                status = np.append(status, np.array(next_block.get_location()))
+            else:
+                status = np.append(status, np.array(self.entrance_position))
+        else:
+            status = np.append(status, np.array([0,0]))
+
         next_state, reward, done = map(
             lambda x: np.expand_dims(x, 0), [status, [reward], [done]]
         )
@@ -90,14 +111,14 @@ class _BlockArrangement(BaseEnv):
             next = self.SPACE.event_in[self.STAGE]
 
         #현재 적치와 다음 적치 사이에 발생하는 Move_OUT 블록 추출
+        cnt = 0
         transfers = []
         out_events = sorted(self.SPACE.event_out, key=lambda out: out[0])
         for i in range(self.STAGE):
             if current < out_events[i][0] <= next:
                 transfers.append(out_events[i])
-                #print(f"반출 작업 발생!! {out_events[i][1].get_location()}")
         if len(transfers) == 0:
-            return
+            return 0
         
         current_blocks = []
         blocks = self.SPACE.get_blocks()
@@ -107,55 +128,38 @@ class _BlockArrangement(BaseEnv):
             if start <= current < end:
                 current_blocks.append(block)
         transfers = self.move_out_order_optimization(transfers)
-        cnt = 0
         for transfer in transfers:
             state = self.SPACE.get_status(max(0, self.STAGE - 1))
             x_loc, y_loc = transfer[1].get_location()
 
             #Move_OUT 가능한지 체크
             possible = self.reachableToExit(state, x_loc, y_loc)
-            #print(f"Move_OUT possible: {possible}")
             if possible:
                 state[x_loc][y_loc] = -1.0
                 self.BLOCKS = blocks
             else:
-                print("비작업 블록 발생!!")
-                #간섭블록의 위치를 가져옴
+                #간섭블록 위치 가져오기
                 blocking_position = self.find_blocking_block(state, x_loc, y_loc)
-                #print(f"blocking_postion: {blocking_position}")
                 #간섭블록의 위치로 간섭블록 탐색
                 for block in self.BLOCKS:
                     id = block.name
                     isin = block.isin
                     start, end = block.get_schedule()
-                    print(id, isin, start, end)
-
-                print()
 
                 new_blocks = copy.deepcopy(blocks)
                 for block in blocks:
-                    #print(block.name)
                     if block.isin == True:
                         x, y = block.get_location()
                         for pos in blocking_position:
                             if x == int(pos / self.height) and y == int(pos % self.height):
-                                cnt = cnt + 1
+                                cnt += self.rearrangement_occur_reward
                                 block._startdate = blocks[self.STAGE-1]._startdate
                                 new_blocks.insert(self.STAGE, block)
-                                #print(f"blockID: {block.name}")
                 self.BLOCKS = new_blocks
-                print("재배치 추가후 스케쥴")
-                for block in self.BLOCKS:
-                    id = block.name
-                    isin = block.isin
-                    start, end = block.get_schedule()
-                    print(id, isin, start, end)
-
-                print()#self.NUM_BLOCKS = len(new_blocks)
                 break
         
         self.SPACE.update_blocks(copy.deepcopy(self.BLOCKS))
-        return -cnt
+        return cnt
 
 
     def close(self):
@@ -265,14 +269,13 @@ class _BlockArrangement(BaseEnv):
                     distance[adj_node[0]] = cost
 
         shortest_len = distance[(self.width-1) * self.height]
-        print(f"shortest_len = {shortest_len}")
 
         visit = np.full((self.width,self.height), -1, dtype = int)
         st = []
         st.append((target_node, []))
         visit[xloc][yloc] = 0
         for i in range(1, self.height): 
-            visit[self.height][i] = 10
+            visit[self.width-1][i] = 10
         shortest_path = self.find_shortest_path(state, st, visit, shortest_len, 0)
         
         blocking_blocks = []
@@ -282,7 +285,6 @@ class _BlockArrangement(BaseEnv):
             if state[x][y] != -1:
                 blocking_blocks.append(i)
 
-        print(f"blocking_blocks = {blocking_blocks}")
         return blocking_blocks
 
     def reachableToExit(self, state, x, y):
@@ -292,12 +294,12 @@ class _BlockArrangement(BaseEnv):
         dy = [0,0,-1,+1]
         visit = np.full((self.width, self.height), 0, dtype = int)
         visit[x,y] = 1
-        for i in range(1, 5):
-            visit[self.height][i] = 1
+        for i in range(1, self.height):
+            visit[self.width-1][i] = 1
         is_reachable = False
         while q:
             cur_x, cur_y = q.popleft()
-            if cur_x == self.height and cur_y == 0:
+            if cur_x == self.width-1 and cur_y == 0:
                 is_reachable = True
                 break
             for i in range(4):
@@ -310,28 +312,33 @@ class _BlockArrangement(BaseEnv):
                     q.append([next_x, next_y])
         return is_reachable
     
-    def generate_space_block(self, width, height, num_block, arrival_scale, stock_scale):
+    def generate_space_block(self, width, height, num_block, arrival_scale, stock_scale, provided_ratio):
         space = sp.Space(width, height)
-        new_schedule = self.generate_schedule(num_block, arrival_scale, stock_scale)
+        new_schedule = self.generate_schedule(num_block, arrival_scale, stock_scale, provided_ratio)
+        self.idx += 1
         blocks = []
         for index, row in new_schedule.iterrows():
             date_in = row['Move_IN']
             date_out = row['Move_OUT']
             term = row['duration']
-            blocks.append(bl.Block(1,1, date_in, date_out, term, row['BlockID']))
+            provided = row['provided']
+            blocks.append(bl.Block(1,1, date_in, date_out, term, row['BlockID'], provided))
         return space, blocks
 
-    def generate_schedule(self, num_block, arrival_scale, stock_scale):
-        new_schedule = pd.DataFrame(columns=['BlockID','Move_IN','Move_OUT','duration','JIBUN'])
-        # rvs = random vairable sampling
-        # scale = standard deviation
-        arrivals = stats.expon.rvs(scale=arrival_scale, size=num_block) 
-        stocks = stats.expon.rvs(scale=stock_scale, size=num_block)
+    def generate_schedule(self, num_block, arrival_scale, stock_scale, provided_ratio):
+        new_schedule = pd.DataFrame(columns=['BlockID','Move_IN','Move_OUT','duration','JIBUN', 'provided'])
+        arrivals = stats.poisson.rvs(arrival_scale, size=num_block) 
+        stocks = stats.poisson.rvs(stock_scale, size=num_block)
+
+        provided_cnt = int(num_block * provided_ratio)
+        provided_blocks = sorted(random.sample(range(num_block), provided_cnt))
+        provided_idx = 0
+
         current_time = datetime.datetime.strptime('2022-05-01 09:00:00', '%Y-%m-%d %H:%M:%S')
         idx = 0
         for i in range(num_block):
-            next_time = current_time + datetime.timedelta(hours=arrivals[i])
-            end_time = next_time + datetime.timedelta(days=stocks[i])
+            next_time = current_time + datetime.timedelta(hours=int(arrivals[i]))
+            end_time = next_time + datetime.timedelta(days=int(stocks[i]))
             duration = datetime.timedelta(days=end_time.day - next_time.day) + datetime.timedelta(days=(end_time.month - next_time.month)*30)
             current_time = next_time
             if duration.days == 0:
@@ -340,15 +347,21 @@ class _BlockArrangement(BaseEnv):
             
             next_time = datetime.datetime(next_time.year, next_time.month, next_time.day, next_time.hour)
             end_time = datetime.datetime(end_time.year, end_time.month, end_time.day)
+
+            provided = False
+            if provided_idx < provided_cnt and idx == provided_blocks[provided_idx]:
+                provided = True
+                provided_idx += 1
+
+            row = pd.Series([idx, next_time, end_time, duration.days, '', provided],
+                    index=['BlockID', 'Move_IN', 'Move_OUT', 'duration', 'JIBUN', 'provided'])
             idx += 1
-            row = pd.Series([idx, next_time, end_time, duration.days, ''],
-                    index=['BlockID', 'Move_IN', 'Move_OUT', 'duration', 'JIBUN'])
             new_schedule = new_schedule.append(row, ignore_index=True)
+        
         return new_schedule
 
     def get_state(self):
         state = self.SPACE.get_status(max(0, self.STAGE - 1))
-        #state = self.normalize_state(state, self.STAGE)
         return state
 
 class block_arrangement(_BlockArrangement):
