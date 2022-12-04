@@ -26,9 +26,11 @@ jorldy기반 학습 방법은 아래와 같습니다.
 5. python main.py --config config.dqn.block_arrangement 
 
 ## 프로젝트 결과
-아래 그림은 PPO 알고리즘 기반 
+아래 그림은 100,000회 학습한 에이전트의 블록 배치 예시입니다. 에이전트는 재배치 작업을 최소화하기 위해 블록 적치장에 임의의 이동 통로를 만드는 정책을 수립한것을 관찰할 수 있습니다. 
 ![PPO_example](https://user-images.githubusercontent.com/31296656/204970196-b0334919-ccb0-4a24-85be-884bfa8c7c30.png)
 
 우리는 BAE에 다양한 아이디어가 적용되어 더욱 실용적이고 뛰어난 성능의 블록 배치 정책이 제안되길 희망하여 다양한 시나리오에 대한 벤치마크 성능을 제공합니다. 아래 표는 본 프로젝트에서 수행한 실험 시나리오이며, 자세한 실험 결과 및 분석 내용은 논문을 참조하시기 바랍니다.
-![시나리오](https://user-images.githubusercontent.com/31296656/204969318-cdf9d35a-7161-4120-b669-632653ce1326.PNG)
+<p align="center">
+<img src = "https://user-images.githubusercontent.com/31296656/204969318-cdf9d35a-7161-4120-b669-632653ce1326.PNG" width="90%" height="90%"/>
+</p>
 
